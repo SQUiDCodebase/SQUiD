@@ -5,7 +5,7 @@ Towards ultra-secure, scalable, and queryable genotype-phenotype databases with 
 Building Project
 --------------------------------
 
-Download and compile our [fork](https://github.com/SQUiDCodebase/HElibPublicKeySwitch) of HElib (make sure you install the [patchelf](https://github.com/NixOS/patchelf) and [m4](https://www.gnu.org/software/m4/) dependencies as well).
+Download and compile our [fork](https://github.com/SQUiDCodebase/HElibPublicKeySwitch) of HElib (make sure you install the [patchelf](https://github.com/NixOS/patchelf) (latest version) and [m4](https://www.gnu.org/software/m4/) (latest version) dependencies as well).
 Use the guide [here](https://github.com/homenc/HElib/blob/master/INSTALL.md) and follow **Option 1** install HElib to `mylibs` folder in the root directory.
 
 Download [Google Benchmark](https://github.com/google/benchmark).
@@ -52,6 +52,12 @@ Running Similarity query (d: snp 0 = 2 and snp 1 = 2, target = ALS)
 Count with target:   2
 Count without target:1
 ```
+--------------------------------
+Build and Demo Setup Information
+--------------------------------
+
+We verified the steps to install SQUiD and run the demo on a medium sized AWS machine (c4.8xlarge) running *Ubuntu 22.04 TLS*. 
+On this machine, it took a few minutes to install HElib, less than a minute to install SQUiD, and  less than a minute to generate the output of the demo.
 
 --------------------------------
 Experimenting with Real Data
@@ -138,5 +144,4 @@ Acknowledgements
 --------------------------------
 
 SQUiD utilizes the comparator from this [repository](https://github.com/iliailia/comparison-circuit-over-fq) which is an implimentation of this [paper](https://eprint.iacr.org/2021/315) by Ilia Iliashenko and Vincent Zucca.
-
 
