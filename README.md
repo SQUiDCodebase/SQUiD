@@ -5,10 +5,10 @@ Towards ultra-secure, scalable, and queryable genotype-phenotype databases with 
 Building Project
 --------------------------------
 
-Download and compile our [fork](https://github.com/SQUiDCodebase/HElibPublicKeySwitch) of HElib (make sure you install the [patchelf](https://github.com/NixOS/patchelf) (latest version) and [m4](https://www.gnu.org/software/m4/) (latest version) dependencies as well).
-Use the guide [here](https://github.com/homenc/HElib/blob/master/INSTALL.md) and follow **Option 1** install HElib to `mylibs` folder in the root directory.
+Download and compile our [fork](https://github.com/SQUiDCodebase/HElibPublicKeySwitch) of HElib (make sure you install the [patchelf](https://github.com/NixOS/patchelf) (tested on v0.14.3-1) and [m4](https://www.gnu.org/software/m4/) (tested on v1.4.19-3) dependencies as well).
+Use the guide [here](https://github.com/homenc/HElib/blob/master/INSTALL.md) and follow **Option 1** and install HElib to a `mylibs` directory in the root directory.
 
-Download [Google Benchmark](https://github.com/google/benchmark).
+Download [Google Benchmark](https://github.com/google/benchmark) (tested on v1.8.3).
 
 run `./scripts/make.sh` and then `make` to compile our repository.
 
