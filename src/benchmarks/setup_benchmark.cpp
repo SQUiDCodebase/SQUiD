@@ -16,7 +16,7 @@ using std::chrono::milliseconds;
 using namespace std;
 
 std::atomic<int> counter(0); // Shared counter
-const int numThreads = 35;
+const int numThreads = 30;
 
 const int target1 = 70000;
 const int target2 = 1072820;
@@ -25,17 +25,18 @@ const int target4 = 84000000;
 
 bool done1 = false, done2 = false, done3 = false, done4 = false;// Flags to track task completion
 
+Server *server;
+
 void task(std::chrono::steady_clock::time_point startTime) {
-    Server server = Server(constants::P131, false);
     std::vector<unsigned long> data = std::vector<unsigned long>(1000);
-    
-    helib::Ctxt r = server.Encrypt(data);
+    std::cout << "Thread " << std::this_thread::get_id() << ": Starting...\n";
+    helib::Ctxt r = server->Encrypt(data);
     counter++;
 
 
     while (!done4) {
         // Perform the task (increment the counter)
-        r = server.Encrypt(data);
+        r = server->Encrypt(data);
         counter++;
 
         // Check for task completion and print time
@@ -70,6 +71,7 @@ void task(std::chrono::steady_clock::time_point startTime) {
 
 int main()
 {
+    server = new Server(constants::BenchParams, false);
     std::thread threads[numThreads];
 
     auto startTime = std::chrono::steady_clock::now();
@@ -83,6 +85,9 @@ int main()
     for (int i = 0; i < numThreads; ++i) {
         threads[i].join();
     }
+
+    std::cout << "Counter reached " << counter << '\n';
+    delete server;
 
     return 0;
 }

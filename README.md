@@ -63,7 +63,25 @@ On this machine, it took a few minutes to install HElib, less than a minute to i
 Experimenting with Real Data
 --------------------------------
 
-We have include the first 10 snps for 100 subjects for chromosome 22 using [1000 Genomes](https://www.internationalgenome.org/). This data can be found in a vcf file at `data/chr22_100samples_10SNPs.vcf`. Running `./bin/real` will load this vcf into SQUiD, where you can experiment on it with our queries.
+We have include the first 10 snps for 100 subjects for chromosome 22 using [1000 Genomes](https://www.internationalgenome.org/) from the [phase 3](https://www.internationalgenome.org/category/phase-3) data set (which uses GRCh38). The first 10 SNPs are:
+
+| Name | Position |
+|-----------------|-----------------|
+| rs9617549   | 22:10874444    |
+| rs577013928    | 22:10874535    |
+| rs565082899   | 22:10874551    |
+| rs540382744   | 22:10874556    |
+| rs573244332    | 22:10874564    |
+| rs539162497   | 22:11121568    |
+| rs557291239   | 22;11121677    |
+| rs569309845    | 22:11121789    |
+| rs536692189   | 22:11121839    |
+| rs556567876   | 22:11122005    |
+
+
+This data can be found in a vcf file at `data/chr22_100samples_10SNPs.vcf`. Running `./bin/real` will load this vcf into SQUiD, where you can experiment on it with our queries. 
+
+Replacing this vcf file or changing in the path in `real.cpp` will allow you to experiment on your own vcf data.
 
 --------------------------------
 Installing SQUiD API

@@ -163,7 +163,7 @@ public:
   void print_decrypted(const Ctxt& ctxt) const;
 
   // comparison function
-  void compare(Ctxt& ctxt_res, const Ctxt& ctxt_x, const Ctxt& ctxt_y) const;
+  void compare(Ctxt& ctxt_res, const Ctxt& ctxt_x, const Ptxt<BGV>& ptxt_y) const;
 
   // minimum/maximum function for general vectors
   void min_max(Ctxt& ctxt_min, Ctxt& ctxt_max, const Ctxt& ctxt_x, const Ctxt& ctxt_y) const;
