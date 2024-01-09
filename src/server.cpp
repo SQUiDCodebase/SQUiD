@@ -9,6 +9,7 @@ using namespace std;
 
 // ------------------------------------------------------------------------------------------------------------------------
 helib::Ctxt AddMany(vector<helib::Ctxt> &v);
+helib::Ctxt AddManySafe(vector<helib::Ctxt> &v, const helib::PubKey &pk);
 helib::Ctxt MultiplyMany(vector<helib::Ctxt> &v);
 
 Server::Server(const Params &_params, bool _with_similarity)
@@ -26,6 +27,7 @@ Server::Server(const Params &_params, bool _with_similarity)
 
     with_similarity = _with_similarity;
 
+    // Can take a while to generate polynomials for comparator so we have option to skip it
     if (_with_similarity)
     {
         comparator = unique_ptr<he_cmp::Comparator>(new he_cmp::Comparator(meta.data->context, he_cmp::UNI, 1, 1, meta.data->secretKey, false));
@@ -45,11 +47,7 @@ void Server::GenData(uint32_t _num_rows, uint32_t _num_cols)
         vector<helib::Ctxt> cipher_vector = vector<helib::Ctxt>();
         for (uint32_t j = 0; j < num_compressed_rows; j++)
         {
-            helib::Ptxt<helib::BGV> ptxt(meta.data->context);
-
-            helib::Ctxt ctxt(meta.data->publicKey);
-
-            meta.data->publicKey.Encrypt(ctxt, ptxt);
+            helib::Ctxt ctxt = Encrypt(0);
 
             cipher_vector.push_back(ctxt);
         }
@@ -57,6 +55,31 @@ void Server::GenData(uint32_t _num_rows, uint32_t _num_cols)
     }
 
     db_set = true;
+}
+
+void Server::GenContinuousData(uint32_t _num_rows, uint32_t _low, uint32_t _high)
+{
+    num_rows = _num_rows;
+    num_cols = 1;
+
+    num_compressed_rows = num_rows % num_slots == 0 ? num_rows / num_slots : (num_rows / num_slots) + 1;
+
+    continuous_db = vector<helib::Ctxt>();
+    for (uint32_t j = 0; j < num_compressed_rows; j++)
+    {
+        helib::Ptxt<helib::BGV> ptxt(meta.data->context);
+
+        helib::Ctxt ctxt(meta.data->publicKey);
+
+        for (uint32_t i = 0; i < num_slots; i++)
+        {
+            ptxt[i] = rand() % (_high - _low + 1) + _low;
+        }
+
+        meta.data->publicKey.Encrypt(ctxt, ptxt.getPolyRepr());
+
+        continuous_db.push_back(ctxt);
+    }
 }
 
 void Server::GenDataDummy(uint32_t _num_rows, uint32_t _num_cols)
@@ -105,7 +128,7 @@ void Server::SetData(vector<vector<uint32_t>> &db)
         for (uint32_t j = 0; j < num_compressed_rows; j++)
         {
 
-            helib::Ptxt<helib::BGV> ptxt(meta.data->context);
+            vector<unsigned long> ptxt = vector<unsigned long>(num_slots, 0);
 
             uint32_t entries_left = min(num_slots, num_rows - (j * num_slots));
             for (uint32_t k = 0; k < entries_left; k++)
@@ -113,9 +136,7 @@ void Server::SetData(vector<vector<uint32_t>> &db)
                 ptxt[k] = db[i][j * num_slots + k];
             }
 
-            helib::Ctxt ctxt(meta.data->publicKey);
-
-            meta.data->publicKey.Encrypt(ctxt, ptxt);
+            helib::Ctxt ctxt = Encrypt(ptxt);
 
             cipher_vector.push_back(ctxt);
         }
@@ -262,6 +283,8 @@ void Server::DeleteRowMultiplication(uint32_t row)
     {
         encrypted_db[c][compressed_row_index].multByConstant(mask);
     }
+
+    num_deletes += 1;
 }
 
 helib::Ctxt Server::CountQuery(bool conjunctive, vector<pair<uint32_t, uint32_t>> &query)
@@ -309,7 +332,7 @@ helib::Ctxt Server::CountQuery(bool conjunctive, vector<pair<uint32_t, uint32_t>
         print_vector(Decrypt(filter_results[0]));
     }
     MaskWithNumRows(filter_results);
-    helib::Ctxt result = AddMany(filter_results);
+    helib::Ctxt result = AddManySafe(filter_results, meta.data->publicKey);
     result = SquashCtxtLogTime(result);
     return result;
 }
@@ -366,7 +389,7 @@ helib::Ctxt Server::CountQueryP(vector<pair<uint32_t, uint32_t>> &query, uint32_
     return SquashCtxtLogTime(predicate);
 }
 
-pair<helib::Ctxt, helib::Ctxt> Server::MAFQuery(uint32_t snp, bool conjunctive, vector<pair<uint32_t, uint32_t>> &query)
+helib::Ctxt Server::MAFQuery(uint32_t snp, bool conjunctive, vector<pair<uint32_t, uint32_t>> &query)
 {
     vector<vector<helib::Ctxt>> cols = filter(query);
     uint32_t num_columns = cols[0].size();
@@ -410,17 +433,20 @@ pair<helib::Ctxt, helib::Ctxt> Server::MAFQuery(uint32_t snp, bool conjunctive, 
         indv_MAF.push_back(clone);
     }
 
-    helib::Ctxt freq = AddMany(indv_MAF);
-    helib::Ctxt number_of_patients = AddMany(filter_results);
+    helib::Ctxt freq = AddManySafe(indv_MAF, meta.data->publicKey);
+    helib::Ctxt number_of_patients = AddManySafe(filter_results, meta.data->publicKey);
 
-    freq = SquashCtxtLogTime(freq);
-    number_of_patients = SquashCtxtLogTime(number_of_patients);
+    freq = SquashCtxtWithMask(freq, 0);
+    number_of_patients = SquashCtxtWithMask(number_of_patients, 1);
 
     number_of_patients.multByConstant(NTL::ZZX(2));
-    return pair(freq, number_of_patients);
+
+    freq += number_of_patients;
+
+    return freq;
 }
 
-pair<helib::Ctxt, helib::Ctxt> Server::MAFQueryP(uint32_t snp, vector<pair<uint32_t, uint32_t>> &query, uint32_t num_threads)
+helib::Ctxt Server::MAFQueryP(uint32_t snp, vector<pair<uint32_t, uint32_t>> &query, uint32_t num_threads)
 {
     uint32_t t = num_threads; // You can set this value based on the number of available cores or your requirements
 
@@ -452,11 +478,14 @@ pair<helib::Ctxt, helib::Ctxt> Server::MAFQueryP(uint32_t snp, vector<pair<uint3
     helib::Ctxt freq = encrypted_db[snp][0];
     freq *= predicate;
 
-    freq = SquashCtxtLogTime(freq);
-    helib::Ctxt number_of_patients = SquashCtxtLogTime(predicate);
+    freq = SquashCtxtWithMask(freq, 0);
+    helib::Ctxt number_of_patients = SquashCtxtWithMask(predicate, 1);
 
     number_of_patients.multByConstant(NTL::ZZX(2));
-    return pair(freq, number_of_patients);
+
+
+    freq += number_of_patients;
+    return freq;
 }
 
 vector<helib::Ctxt> Server::PRSQuery(vector<pair<uint32_t, int32_t>> &prs_params)
@@ -465,16 +494,16 @@ vector<helib::Ctxt> Server::PRSQuery(vector<pair<uint32_t, int32_t>> &prs_params
 
     for (uint32_t j = 0; j < num_compressed_rows; j++)
     {
-        vector<helib::Ctxt> indvs_scores;
+        helib::Ctxt sum(meta.data->publicKey);
+
         for (pair<uint32_t, int32_t> i : prs_params)
         {
             helib::Ctxt temp = encrypted_db[i.first][j];
             temp.multByConstant(NTL::ZZX(i.second));
 
-            indvs_scores.push_back(temp);
+            sum += temp;
         }
-        helib::Ctxt score = AddMany(indvs_scores);
-        scores.push_back(score);
+        scores.push_back(sum);
     }
     return scores;
 }
@@ -484,19 +513,19 @@ void process_iteration_prs(std::vector<std::vector<helib::Ctxt>> &encrypted_db,
                            vector<pair<uint32_t, int32_t>> &prs_params,
                            size_t start_idx,
                            size_t end_idx,
-                           std::mutex &scores_mutex)
+                            std::mutex &scores_mutex
+                           )
 {
-    std::vector<helib::Ctxt> temp;
+    helib::Ctxt score = encrypted_db[prs_params[start_idx].first][0];
+    score.multByConstant(NTL::ZZX(prs_params[start_idx].second));
 
-    for (size_t i = start_idx; i < end_idx; i++)
+    for (size_t i = start_idx + 1; i < end_idx; i++)
     {
         pair<uint32_t, int32_t> param = prs_params[i];
-
         helib::Ctxt clone = encrypted_db[param.first][0];
         clone.multByConstant(NTL::ZZX(param.second));
-        temp.push_back(clone);
-    }
-    helib::Ctxt score = AddMany(temp);
+        score += clone;
+    }  
 
     std::lock_guard<std::mutex> lock(scores_mutex);
     scores.push_back(score);
@@ -510,9 +539,11 @@ helib::Ctxt Server::PRSQueryP(vector<pair<uint32_t, int32_t>> &prs_params, uint3
 
     std::vector<std::thread> threads;
 
+    vector<helib::Ctxt> scores = vector<helib::Ctxt>();
+    scores.reserve(t);
+
     std::mutex scores_mutex;
 
-    vector<helib::Ctxt> scores = vector<helib::Ctxt>();
 
     for (size_t i = 0; i < t; i++)
     {
@@ -528,7 +559,13 @@ helib::Ctxt Server::PRSQueryP(vector<pair<uint32_t, int32_t>> &prs_params, uint3
     {
         thread.join();
     }
-    return AddMany(scores);
+
+    helib::Ctxt scores_all = scores[0];
+    for (size_t i = 1; i < t; i++)
+    {
+        scores_all += scores[i];
+    }
+    return scores_all;
 }
 
 pair<helib::Ctxt, helib::Ctxt> Server::SimilarityQuery(uint32_t target_column, vector<helib::Ctxt> &d, uint32_t threshold)
@@ -538,6 +575,13 @@ pair<helib::Ctxt, helib::Ctxt> Server::SimilarityQuery(uint32_t target_column, v
     {
         std::cout << "Server not setup to run similarity queries" << std::endl;
         throw "Invalid setup";
+    }
+
+    if (num_deletes > constants::ALPHA)
+    {
+        std::cout << "Too many deletes have been performed. Cannot run similarity query" << std::endl;
+        std::cout << "The data owner needs to refresh the ciphertexts" << std::endl;
+        throw "Too many deletes";
     }
 
     vector<vector<helib::Ctxt>> normalized_scores = vector<vector<helib::Ctxt>>();
@@ -550,6 +594,9 @@ pair<helib::Ctxt, helib::Ctxt> Server::SimilarityQuery(uint32_t target_column, v
             helib::Ctxt clone = encrypted_db[i][j];
             clone -= d[i];
             clone.square();
+            
+            clone = clone.cleanUp();
+
             temp.push_back(clone);
         }
         normalized_scores.push_back(temp);
@@ -558,7 +605,7 @@ pair<helib::Ctxt, helib::Ctxt> Server::SimilarityQuery(uint32_t target_column, v
 
     for (uint32_t j = 0; j < num_compressed_rows; j++)
     {
-        scores.push_back(AddMany(normalized_scores[j]));
+        scores.push_back(AddManySafe(normalized_scores[j], meta.data->publicKey));
     }
     if (constants::DEBUG)
     {
@@ -569,12 +616,17 @@ pair<helib::Ctxt, helib::Ctxt> Server::SimilarityQuery(uint32_t target_column, v
         }
     }
 
-    helib::Ctxt thres = Encrypt((unsigned long)threshold);
+    helib::Ptxt<helib::BGV> ptxt_threshold(meta.data->context);
+    for (uint32_t i = 0; i < num_slots; i++)
+    {
+        ptxt_threshold[i] = threshold;
+    }
+
     vector<helib::Ctxt> predicate = vector<helib::Ctxt>();
     for (uint32_t j = 0; j < num_compressed_rows; j++)
     {
-        helib::Ctxt res = scores[j];
-        comparator->compare(res, scores[j], thres);
+        helib::Ctxt res(meta.data->publicKey);
+        comparator->compare(res, scores[j], ptxt_threshold);
         predicate.push_back(res);
     }
 
@@ -601,11 +653,15 @@ pair<helib::Ctxt, helib::Ctxt> Server::SimilarityQuery(uint32_t target_column, v
     for (uint32_t j = 0; j < num_compressed_rows; j++)
     {
         inverse_target_column[j].multiplyBy(predicate[j]);
+        inverse_target_column[j] = inverse_target_column[j].cleanUp();
+
         predicate[j].multiplyBy(encrypted_db[target_column][j]);
+        predicate[j] = predicate[j].cleanUp();
+
     }
 
-    helib::Ctxt count_with = AddMany(predicate);
-    helib::Ctxt count_without = AddMany(inverse_target_column);
+    helib::Ctxt count_with = AddManySafe(predicate, meta.data->publicKey);
+    helib::Ctxt count_without = AddManySafe(inverse_target_column, meta.data->publicKey);
 
     count_with = SquashCtxtLogTime(count_with);
     count_without = SquashCtxtLogTime(count_without);
@@ -615,52 +671,57 @@ pair<helib::Ctxt, helib::Ctxt> Server::SimilarityQuery(uint32_t target_column, v
 
 void process_iteration_similarity(std::vector<std::vector<helib::Ctxt>> &encrypted_db,
                                   std::vector<helib::Ctxt> &d,
-                                  std::vector<std::vector<helib::Ctxt>> &normalized_scores,
+                                  std::vector<helib::Ctxt> &scores,
                                   size_t start_idx,
                                   size_t end_idx,
-                                  std::mutex &normalized_scores_mutex)
+                                  std::mutex &scores_mutex)
 {
-    std::vector<helib::Ctxt> temp = std::vector<helib::Ctxt>();
+
+    helib::Ctxt score = encrypted_db[start_idx][0];
+    score -= d[start_idx];
+    score.square();
+    score.cleanUp();
     for (size_t i = start_idx; i < end_idx; i++)
     {
         helib::Ctxt clone = encrypted_db[i][0];
         clone -= d[i];
         clone.square();
-        temp.push_back(clone);
+        clone.cleanUp();
+        score += clone;
     }
 
-    // Ensure thread safety when adding to the shared result vector.
-    std::lock_guard<std::mutex> lock(normalized_scores_mutex);
-    normalized_scores.push_back(temp);
+    std::lock_guard<std::mutex> lock(scores_mutex);
+    scores.push_back(score);
 }
 
-pair<helib::Ctxt, helib::Ctxt> Server::SimilarityQueryP(uint32_t target_column, vector<helib::Ctxt> &d, uint32_t threshold, uint32_t num_threads)
+pair<helib::Ctxt, helib::Ctxt> Server::SimilarityQueryP(uint32_t target_column, std::vector<helib::Ctxt> &d, uint32_t threshold, uint32_t num_threads)
 {
     if (!with_similarity)
     {
         std::cout << "Server not setup to run similarity queries" << std::endl;
         throw "Invalid setup";
     }
-    // Compute Normalized Score
-    std::vector<std::vector<helib::Ctxt>> normalized_scores = std::vector<std::vector<helib::Ctxt>>();
 
-    // The number of threads to use (t)
-    uint32_t t = num_threads; // You can set this value based on the number of available cores or your requirements
+    uint32_t t = num_threads;
+    uint32_t num_snps = d.size();
 
-    size_t chunk_size = d.size() / t;
+    size_t chunk_size = num_snps / t;
+
+    vector<helib::Ctxt> scores = vector<helib::Ctxt>();
+    scores.reserve(t);
+
+    std::mutex scores_mutex;
 
     std::vector<std::thread> threads;
-
-    std::mutex normalized_scores_mutex;
-
     for (size_t i = 0; i < t; i++)
     {
+
         size_t start_idx = i * chunk_size;
-        size_t end_idx = (i == t - 1) ? d.size() : (i + 1) * chunk_size;
+        size_t end_idx = (i == t - 1) ? num_snps : (i + 1) * chunk_size;
 
         threads.emplace_back(process_iteration_similarity, std::ref(encrypted_db),
-                             std::ref(d), std::ref(normalized_scores),
-                             start_idx, end_idx, std::ref(normalized_scores_mutex));
+                             std::ref(d), std::ref(scores),
+                             start_idx, end_idx, std::ref(scores_mutex));
     }
 
     for (auto &thread : threads)
@@ -668,61 +729,111 @@ pair<helib::Ctxt, helib::Ctxt> Server::SimilarityQueryP(uint32_t target_column, 
         thread.join();
     }
 
-    vector<helib::Ctxt> scores = vector<helib::Ctxt>();
+    helib::Ctxt scores_all = AddManySafe(scores, meta.data->publicKey);
 
-    for (uint32_t j = 0; j < num_compressed_rows; j++)
+    helib::Ptxt<helib::BGV> ptxt_threshold(meta.data->context);
+    for (uint32_t i = 0; i < num_slots; i++)
     {
-        scores.push_back(AddMany(normalized_scores[j]));
-    }
-    if (constants::DEBUG)
-    {
-        cout << "After scoring:" << endl;
-        for (uint32_t j = 0; j < num_compressed_rows; j++)
-        {
-            print_vector(Decrypt(scores[j]));
-        }
+        ptxt_threshold[i] = threshold;
     }
 
-    helib::Ctxt thres = Encrypt((unsigned long)threshold);
-    vector<helib::Ctxt> predicate = vector<helib::Ctxt>();
-    for (uint32_t j = 0; j < num_compressed_rows; j++)
-    {
-        helib::Ctxt res = scores[j];
-        comparator->compare(res, scores[j], thres);
-        predicate.push_back(res);
-    }
+    helib::Ctxt predicate(meta.data->publicKey);
+        
+    comparator->compare(predicate, scores_all, ptxt_threshold);
 
-    if (constants::DEBUG)
-    {
-        cout << "After thres:" << endl;
-        for (uint32_t j = 0; j < num_compressed_rows; j++)
-        {
-            print_vector(Decrypt(predicate[j]));
-        }
-    }
+    helib::Ctxt inverse_predicate = predicate;
+    AddOneMod2(inverse_predicate);
 
-    vector<helib::Ctxt> inverse_predicate = vector<helib::Ctxt>();
-    for (uint32_t j = 0; j < num_compressed_rows; j++)
-    {
-        helib::Ctxt inv = predicate[j];
-        AddOneMod2(inv);
-        inverse_predicate.push_back(inv);
-    }
+    predicate *= encrypted_db[target_column][0];
+    inverse_predicate *= encrypted_db[target_column][0];
 
-    for (uint32_t j = 0; j < num_compressed_rows; j++)
-    {
-        predicate[j] *= encrypted_db[target_column][j];
-        inverse_predicate[j] *= encrypted_db[target_column][j];
-    }
-
-    helib::Ctxt count_with = AddMany(predicate);
-    helib::Ctxt count_without = AddMany(inverse_predicate);
-
-    count_with = SquashCtxtLogTime(count_with);
-    count_without = SquashCtxtLogTime(count_without);
+    helib::Ctxt count_with = SquashCtxtLogTime(predicate);
+    helib::Ctxt count_without = SquashCtxtLogTime(inverse_predicate);
 
     return pair(count_with, count_without);
 }
+
+helib::Ctxt Server::CountingRangeQuery(uint32_t  lower, uint32_t  upper)
+{
+    helib::Ptxt<helib::BGV> ptxt_lower(meta.data->context);
+    helib::Ptxt<helib::BGV> ptxt_upper(meta.data->context);
+
+    for (uint32_t i = 0; i < num_slots; i++)
+    {
+        ptxt_lower[i] = lower;
+        ptxt_upper[i] = upper;
+    }
+
+    vector<helib::Ctxt> predicates = vector<helib::Ctxt>();
+
+    for (uint32_t j = 0; j < num_compressed_rows; j++)
+    {
+        helib::Ctxt lower_predicate(meta.data->publicKey);
+        helib::Ctxt upper_predicate(meta.data->publicKey);
+
+        comparator->compare(lower_predicate, continuous_db[j], ptxt_lower);
+        comparator->compare(upper_predicate, continuous_db[j], ptxt_upper);
+
+        AddOneMod2(lower_predicate);
+
+        upper_predicate *= lower_predicate;
+        upper_predicate.cleanUp();
+
+        predicates.push_back(upper_predicate);
+    }
+
+    helib::Ctxt result = AddManySafe(predicates, meta.data->publicKey);
+    result = SquashCtxtLogTime(result);
+    return result;
+}
+
+pair<helib::Ctxt, helib::Ctxt> Server::MAFRangeQuery(uint32_t  snp, uint32_t  lower, uint32_t  upper)
+{
+    helib::Ptxt<helib::BGV> ptxt_lower(meta.data->context);
+    helib::Ptxt<helib::BGV> ptxt_upper(meta.data->context);
+
+    for (uint32_t i = 0; i < num_slots; i++)
+    {
+        ptxt_lower[i] = lower;
+        ptxt_upper[i] = upper;
+    }
+
+    vector<helib::Ctxt> predicates = vector<helib::Ctxt>();
+
+    for (uint32_t j = 0; j < num_compressed_rows; j++)
+    {
+        helib::Ctxt lower_predicate(meta.data->publicKey);
+        helib::Ctxt upper_predicate(meta.data->publicKey);
+
+        comparator->compare(lower_predicate, continuous_db[j], ptxt_lower);
+        comparator->compare(upper_predicate, continuous_db[j], ptxt_upper);
+
+        AddOneMod2(lower_predicate);
+
+        upper_predicate *= lower_predicate;
+        upper_predicate.cleanUp();
+
+        predicates.push_back(upper_predicate);
+    }
+
+    helib::Ctxt result = AddManySafe(predicates, meta.data->publicKey);
+    result = SquashCtxtLogTime(result);
+
+    vector<helib::Ctxt> indv_MAF = vector<helib::Ctxt>();
+
+    for (uint32_t i = 0; i < num_compressed_rows; i++)
+    {
+        helib::Ctxt clone = encrypted_db[snp][i];
+        clone *= predicates[i];
+        clone.cleanUp();
+        indv_MAF.push_back(clone);
+    }
+
+    helib::Ctxt freq = AddManySafe(indv_MAF, meta.data->publicKey);
+    freq = SquashCtxtLogTime(freq);
+    return pair(freq, result);
+}
+
 
 void Server::AddOneMod2(helib::Ctxt &a)
 {
@@ -770,10 +881,9 @@ helib::Ctxt AddMany(vector<helib::Ctxt> &v)
     return v[0];
 }
 
-helib::Ctxt Server::AddManySafe(vector<helib::Ctxt> &v)
+helib::Ctxt AddManySafe(vector<helib::Ctxt> &v, const helib::PubKey &pk)
 {
-
-    helib::Ctxt result(meta.data->publicKey);
+    helib::Ctxt result(pk);
 
     for (uint32_t i = 0; i < v.size(); i++)
     {
@@ -794,6 +904,24 @@ helib::Ctxt Server::SquashCtxt(helib::Ctxt &ciphertext, uint32_t num_data_elemen
         result += ciphertext;
     }
     return result;
+}
+
+helib::Ctxt Server::SquashCtxtLogTimePower2(helib::Ctxt &ciphertext)
+{
+    const helib::EncryptedArray &ea = meta.data->context.getEA();
+
+    uint32_t depth = floor(log2(num_slots));
+
+    for (int d = depth - 1; d >= 0; d--)
+    {
+        int32_t shift = 1 << d;
+        helib::Ctxt clone = ciphertext;
+        ea.rotate(clone, (-shift));
+        ciphertext += clone;
+        cout << "Step " << d << " capacity:" << ciphertext.capacity() << endl;
+    }
+
+    return ciphertext;
 }
 
 helib::Ctxt Server::SquashCtxtLogTime(helib::Ctxt &ciphertext)
@@ -843,7 +971,10 @@ helib::Ctxt Server::SquashCtxtWithMask(helib::Ctxt &ciphertext, uint32_t index)
     ciphertext = SquashCtxtLogTime(ciphertext);
 
     const helib::EncryptedArray &ea = meta.data->context.getEA();
-    ea.rotate(ciphertext, index);
+    if (index != 0)
+    {
+        ea.rotate(ciphertext, index);
+    }
     helib::Ptxt<helib::BGV> mask(meta.data->context);
     mask[index] = 1;
     ciphertext.multByConstant(mask);
@@ -1005,15 +1136,13 @@ helib::Ptxt<helib::BGV> Server::DecryptPlaintext(helib::Ctxt ctxt)
 
 helib::Ctxt Server::Encrypt(unsigned long a)
 {
-    helib::Ptxt<helib::BGV> ptxt(meta.data->context);
+    vector<unsigned long> a_vec = vector<unsigned long>();
+    for (size_t i = 0; i < num_slots; i++)
+    {
+        a_vec.push_back(a);
+    }
 
-    for (uint32_t i = 0; i < num_slots; i++)
-        ptxt[i] = a;
-
-    helib::Ctxt ctxt(meta.data->publicKey);
-    meta.data->publicKey.Encrypt(ctxt, ptxt);
-
-    return ctxt;
+    return Encrypt(a_vec);
 }
 
 helib::Ctxt Server::Encrypt(vector<unsigned long> a)
@@ -1030,7 +1159,42 @@ helib::Ctxt Server::Encrypt(vector<unsigned long> a)
     }
 
     helib::Ctxt ctxt(meta.data->publicKey);
+
     meta.data->publicKey.Encrypt(ctxt, ptxt);
+
+    return ctxt;
+}
+
+helib::Ctxt Server::EncryptSK(unsigned long a)
+{
+    vector<unsigned long> a_vec = vector<unsigned long>();
+    for (size_t i = 0; i < num_slots; i++)
+    {
+        a_vec.push_back(a);
+    }
+
+    return EncryptSK(a_vec);
+}
+
+helib::Ctxt Server::EncryptSK(vector<unsigned long> a)
+{
+    if (a.size() > num_slots)
+    {
+        throw invalid_argument("Trying to encrypt vector with too many elements");
+    }
+    helib::Ptxt<helib::BGV> ptxt(meta.data->context);
+
+    for (size_t i = 0; i < a.size(); ++i)
+    {
+        ptxt[i] = a[i];
+    }
+
+    helib::Ctxt ctxt(meta.data->secretKey);
+
+    EncodedPtxt eptxt;
+    ptxt.encode(eptxt);
+
+    meta.data->secretKey.Encrypt(ctxt, eptxt);
 
     return ctxt;
 }
